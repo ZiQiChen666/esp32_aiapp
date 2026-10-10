@@ -208,7 +208,7 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
           <option value="measure">2D 物体测量</option>
           <option value="face">人脸检测</option>
           <option value="facerec">人脸识别</option>
-          <option value="track" disabled>物体追踪（开发中）</option>
+          <option value="track">物体追踪</option>
         </select>
         <button id="btnDetect" class="primary ai-tool">识别当前画面</button>
         <button id="btnAuto" class="ghost ai-tool">连续识别</button>
@@ -258,6 +258,17 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
         </div>
         <div id="faceLibList" class="face-lib-list"></div>
         <ul id="fResults" class="ai-results" style="margin-top:8px"></ul>
+      </div>
+      <div id="trackPanel" class="measure-panel" style="display:none">
+        <div class="measure-grid">
+          <div class="field"><label>追踪倒计时（秒）</label><input type="number" id="tSeconds" value="30" min="1" step="1"></div>
+        </div>
+        <div class="measure-actions">
+          <button id="btnTrackStart" class="primary">▶ 开始追踪</button>
+          <button id="btnTrackStop" class="danger" disabled>⏹ 停止</button>
+        </div>
+        <div id="tStatus" class="ai-status">设置倒计时秒数后点“开始追踪”：先拍摄初始化画面并标记目标，再在倒计时内追踪这些 ID</div>
+        <ul id="tResults" class="ai-results"></ul>
       </div>
     </div>
   </section>
@@ -383,6 +394,7 @@ $('#btnStream').onclick = () => {
     const ovl = $('#overlay'); if(ovl) ovl.style.display = 'none';
     const db = $('#dangerBanner'); if(db) db.style.display = 'none';
     lastObjs = [];
+    stopTracking('视频流关闭');
   }else{
     img.src = STREAM_URL + '?t=' + Date.now();
     ov.style.display = 'none';
@@ -590,6 +602,7 @@ const AI_TASKS = {
   fire:     { name:'火灾检测',     unit:'处火情',   prompt: AI_FIRE_PROMPT,     maxW: 512, danger: true, dangerText:'⚠ 火灾警报：检测到火焰 / 烟雾，请立即处置！' },
   face:     { name:'人脸检测',     unit:'张人脸',   prompt: AI_FACE_PROMPT,     maxW: 512 },
   facerec:  { name:'人脸识别',     unit:'张人脸',   prompt:'',                  maxW: 512, face: true },
+  track:    { name:'物体追踪',     unit:'个目标',   prompt: AI_OBJECT_PROMPT,   maxW: 640, track: true },
   measure:  { name:'2D 物体测量',  unit:'个形状',   prompt: AI_MEASURE_PROMPT,  maxW: 640, measure: true }
 };
 let currentTask = 'object';
@@ -677,7 +690,7 @@ function drawBoxes(ctx, objs, W, H){
   const fs = Math.max(12, Math.round(W / 38));
   objs.forEach((o, i) => {
     if(!o.bbox) return;
-    const c = danger ? '#ef4444' : (o.matched === true ? '#22c55e' : (o.matched === false ? '#ef4444' : AI_COLORS[i % AI_COLORS.length]));
+    const c = o.color ? o.color : (danger ? '#ef4444' : (o.matched === true ? '#22c55e' : (o.matched === false ? '#ef4444' : AI_COLORS[i % AI_COLORS.length])));
     const x = o.bbox[0] * W, y = o.bbox[1] * H;
     const w = (o.bbox[2] - o.bbox[0]) * W, h = (o.bbox[3] - o.bbox[1]) * H;
     ctx.lineWidth = Math.max(2, Math.round(W / 220));
@@ -833,11 +846,13 @@ $('#btnAuto').onclick = () => {
 };
 function updateTaskUI(){
   const t = AI_TASKS[currentTask] || {};
-  const isMeasure = !!t.measure, isFace = !!t.face;
-  document.querySelectorAll('.ai-tool').forEach(el => { el.style.display = (isMeasure || isFace) ? 'none' : ''; });
+  const isMeasure = !!t.measure, isFace = !!t.face, isTrack = !!t.track;
+  document.querySelectorAll('.ai-tool').forEach(el => { el.style.display = (isMeasure || isFace || isTrack) ? 'none' : ''; });
   const mp = $('#measurePanel'); if(mp) mp.style.display = isMeasure ? 'block' : 'none';
   const fp = $('#facePanel'); if(fp) fp.style.display = isFace ? 'block' : 'none';
+  const tp = $('#trackPanel'); if(tp) tp.style.display = isTrack ? 'block' : 'none';
   if(isFace){ renderFaceLibrary(); ensureFaceModels(); }
+  if(!isTrack) stopTracking('切换任务');
 }
 function updateMeasureShape(){
   const c = $('#mShape').value === 'circle';
@@ -1115,6 +1130,138 @@ $('#btnFaceImport').onclick = async () => {
   }catch(e){ setFStatus('导入失败：' + e.message, true); }
 };
 renderFaceLibrary();
+
+/* ---------------- 物体追踪 ---------------- */
+let trackState = { active: false, endAt: 0, tracks: [], uiTimer: null, loopTimer: null };
+let trackToken = 0;
+
+function setTStatus(msg, isErr, busy){
+  const el = $('#tStatus');
+  el.textContent = msg;
+  el.className = 'ai-status' + (isErr ? ' error' : (busy ? ' busy' : ''));
+}
+function setTButton(active){
+  $('#btnTrackStart').disabled = active;
+  $('#btnTrackStop').disabled = !active;
+}
+function centerDist(a, b){
+  return Math.hypot((a[0]+a[2])/2 - (b[0]+b[2])/2, (a[1]+a[3])/2 - (b[1]+b[3])/2);
+}
+function trackObjs(tracks){
+  return tracks.map(t => ({
+    bbox: t.bbox, label: t.label, confidence: t.conf, color: t.color,
+    display: '#' + t.id + ' ' + t.label + (t.lost ? ' ?' : '')
+  }));
+}
+function showFrozenFrame(frameCanvas, tracks){
+  const cv = $('#overlay');
+  const r = overlayRect();
+  if(!r){ cv.style.display = 'none'; return; }
+  cv.style.left = r.left + 'px'; cv.style.top = r.top + 'px';
+  cv.style.width = r.w + 'px'; cv.style.height = r.h + 'px';
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.max(1, Math.round(r.w * dpr));
+  cv.height = Math.max(1, Math.round(r.h * dpr));
+  const ctx = cv.getContext('2d');
+  ctx.drawImage(frameCanvas, 0, 0, cv.width, cv.height);
+  drawBoxes(ctx, trackObjs(tracks), cv.width, cv.height);
+  cv.style.display = 'block';
+}
+function updateTracks(dets){
+  const tracks = trackState.tracks;
+  if(!dets.length){ tracks.forEach(t => t.lost = (t.lost || 0) + 1); return; }
+  const pairs = [];
+  tracks.forEach(t => {
+    dets.forEach((d, di) => {
+      if(!d.bbox) return;
+      const v = iou(t.bbox, d.bbox);
+      const cd = centerDist(t.bbox, d.bbox);
+      pairs.push({ t: t, d: d, di: di, v: v, cd: cd, score: v - cd * 0.5 });
+    });
+  });
+  pairs.sort((a, b) => b.score - a.score);
+  const usedT = new Set(), usedD = new Set();
+  pairs.forEach(p => {
+    if(usedT.has(p.t.id) || usedD.has(p.di)) return;
+    if(p.v < 0.02 && p.cd > 0.35) return;   // too far / no overlap -> not the same object
+    usedT.add(p.t.id); usedD.add(p.di);
+    p.t.bbox = p.d.bbox; p.t.conf = p.d.confidence; p.t.hits++; p.t.lost = 0;
+  });
+  tracks.forEach(t => { if(!usedT.has(t.id)) t.lost = (t.lost || 0) + 1; });
+}
+function updateTrackCountdown(){
+  if(!trackState.active) return;
+  const remain = Math.max(0, Math.ceil((trackState.endAt - Date.now()) / 1000));
+  setTStatus('追踪中… 剩余 ' + remain + 's · 已标记 ' + trackState.tracks.length + ' 个目标（命中数见下方）');
+  if(remain <= 0) stopTracking('倒计时结束');
+}
+async function trackLoop(){
+  if(!trackState.active) return;
+  if(Date.now() >= trackState.endAt){ stopTracking('倒计时结束'); return; }
+  try{
+    const fr = await grabFrame();
+    const dets = await visionRequest(AI_OBJECT_PROMPT, fr);
+    updateTracks(dets);
+    lastObjs = trackObjs(trackState.tracks);
+    drawOverlay(lastObjs);
+  }catch(e){ /* keep going on a single failed frame */ }
+  if(!trackState.active) return;
+  trackState.loopTimer = setTimeout(trackLoop, 300);
+}
+function renderTrackResults(){
+  const ul = $('#tResults'); ul.innerHTML = '';
+  if(!trackState.tracks.length){ ul.innerHTML = '<li>没有追踪目标</li>'; return; }
+  trackState.tracks.forEach(t => {
+    const li = document.createElement('li');
+    li.textContent = '#' + t.id + ' ' + t.label + ' · 命中 ' + t.hits + ' 次' + (t.lost ? '（已丢失）' : '');
+    ul.appendChild(li);
+  });
+}
+async function startTracking(){
+  if(trackState.active) return;
+  if(!aiCfg.key){ setTStatus('未配置 API 密钥（ai_config.h）', true); return; }
+  const secs = parseFloat($('#tSeconds').value);
+  if(!(secs > 0)){ setTStatus('请输入倒计时秒数', true); return; }
+  const my = ++trackToken;
+  setTButton(true);
+  setTStatus('正在拍摄初始化画面并识别目标…', false, true);
+  try{
+    const frame = await grabCanvas();                 // 初始化画面
+    const fr = frameToDataURL(frame);
+    const objs = await visionRequest(AI_OBJECT_PROMPT, fr);
+    if(my !== trackToken) return;                     // cancelled during request
+    if(!objs.length){ setTStatus('初始化画面未识别到物体，请调整画面后重试', true); setTButton(false); return; }
+    trackState.tracks = objs.map((o, i) => ({
+      id: i + 1, label: o.label || '目标', bbox: o.bbox, conf: o.confidence,
+      color: AI_COLORS[i % AI_COLORS.length], hits: 1, lost: 0
+    }));
+    showFrozenFrame(frame, trackState.tracks);        // 在初始化画面上标记 ID
+    $('#tResults').innerHTML = '';
+    setTStatus('初始化完成：已标记 ' + trackState.tracks.length + ' 个目标，2 秒后开始追踪…');
+    await new Promise(r => setTimeout(r, 2000));
+    if(my !== trackToken) return;                     // cancelled during hold
+    trackState.active = true;
+    trackState.endAt = Date.now() + secs * 1000;
+    trackState.uiTimer = setInterval(updateTrackCountdown, 250);
+    updateTrackCountdown();
+    trackLoop();
+  }catch(e){ setTButton(false); setTStatus('启动失败：' + e.message, true); }
+}
+function stopTracking(reason){
+  trackToken++;                                       // cancel a pending start too
+  if(!trackState.active && !trackState.uiTimer && !trackState.loopTimer) return;
+  trackState.active = false;
+  clearInterval(trackState.uiTimer); trackState.uiTimer = null;
+  clearTimeout(trackState.loopTimer); trackState.loopTimer = null;
+  setTButton(false);
+  $('#overlay').style.display = 'none';
+  lastObjs = [];
+  renderTrackResults();
+  if(reason && reason !== '切换任务') setTStatus('追踪结束（' + reason + '）：共 ' + trackState.tracks.length + ' 个目标');
+}
+$('#btnTrackStart').onclick = startTracking;
+$('#btnTrackStop').onclick = () => stopTracking('手动停止');
+setTButton(false);
 
 /* ---------------- 初始化 ---------------- */
 loadStatus();
