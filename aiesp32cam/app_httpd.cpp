@@ -23,6 +23,7 @@
 #include <time.h>
 #include <strings.h>
 #include "www_index.h"
+#include "ai_config.h"
 
 #if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
 #include "esp32-hal-log.h"
@@ -1653,6 +1654,14 @@ static esp_err_t record_stop_handler(httpd_req_t *req)
     return send_json(req, resp);
 }
 
+static esp_err_t ai_config_handler(httpd_req_t *req)
+{
+    static char buf[256];
+    snprintf(buf, sizeof(buf), "{\"url\":\"%s\",\"key\":\"%s\",\"model\":\"%s\"}",
+             AI_API_URL, AI_API_KEY, AI_MODEL);
+    return send_json(req, buf);
+}
+
 static esp_err_t index_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
@@ -1863,6 +1872,12 @@ void startCameraServer()
         .handler = record_stop_handler,
         .user_ctx = NULL
     };
+    httpd_uri_t ai_config_uri = {
+        .uri = "/ai/config",
+        .method = HTTP_GET,
+        .handler = ai_config_handler,
+        .user_ctx = NULL
+    };
 
     ra_filter_init(&ra_filter, 20);
 
@@ -1895,6 +1910,7 @@ void startCameraServer()
         httpd_register_uri_handler(camera_httpd, &save_uri);
         httpd_register_uri_handler(camera_httpd, &rec_start_uri);
         httpd_register_uri_handler(camera_httpd, &rec_stop_uri);
+        httpd_register_uri_handler(camera_httpd, &ai_config_uri);
     }
 
     config.server_port += 1;

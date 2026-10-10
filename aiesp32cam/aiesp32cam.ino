@@ -106,14 +106,26 @@ void setup() {
   pinMode(14, INPUT_PULLUP);
 #endif
 
-  // camera init
+  Serial.printf("PSRAM: %s, free heap: %u\n", psramFound() ? "found" : "not found", (unsigned)ESP.getFreeHeap());
+
+  // camera init (retry a few times - helps with marginal modules / warm resets)
   esp_err_t err = esp_camera_init(&config);
+  for (int attempt = 0; err != ESP_OK && attempt < 2; attempt++) {
+    Serial.printf("Camera init failed (0x%x), retry %d/2...\n", err, attempt + 1);
+    esp_camera_deinit();
+    delay(300);
+    err = esp_camera_init(&config);
+  }
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x", err);
+    Serial.printf("Camera init failed with error 0x%x\n", err);
+    Serial.println("Check: 1) camera ribbon fully seated  2) 5V >= 2A power  3) correct board selected");
     return;
   }
 
   sensor_t * s = esp_camera_sensor_get();
+  if (s) {
+    Serial.printf("Camera OK: PID=0x%02x (OV2640=0x26 OV3660=0x36 OV5640=0x56)\n", (unsigned)s->id.PID);
+  }
   // initial sensors are flipped vertically and colors are a bit saturated
   if (s->id.PID == OV3660_PID) {
     s->set_vflip(s, 1); // flip it back

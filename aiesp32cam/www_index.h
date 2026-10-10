@@ -81,7 +81,7 @@ main{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:20px}
 #recBadge{
   position:absolute;top:12px;left:12px;display:none;align-items:center;gap:7px;
   background:rgba(239,68,68,.92);color:#fff;font-size:12px;font-weight:600;
-  padding:6px 12px;border-radius:999px;
+  padding:6px 12px;border-radius:999px;z-index:4;
 }
 #recBadge .dot{background:#fff;color:#fff;animation:blink 1s infinite}
 @keyframes blink{50%{opacity:.25}}
@@ -117,6 +117,20 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
 .switch input:checked{background:var(--accent)}
 .switch input::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.2s}
 .switch input:checked::after{left:23px}
+/* ---- AI panel ---- */
+.ai-box{margin-top:14px;border-top:1px solid var(--line);padding-top:14px}
+.ai-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.ai-head h3{font-size:14px;flex:0 0 auto}
+.ai-head select{flex:1;min-width:130px}
+.ai-head button{padding:9px 14px}
+.ai-status{font-size:12px;color:var(--muted);margin-bottom:10px;min-height:16px;line-height:1.5}
+.ai-status.busy{color:var(--accent2)}
+.ai-status.error{color:var(--danger)}
+.ai-results{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:8px}
+.ai-results li{background:#0d1728;border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:12px;display:flex;gap:8px;align-items:center}
+.ai-results .bar{width:46px;height:6px;border-radius:99px;background:#243352;overflow:hidden}
+.ai-results .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+#overlay{position:absolute;display:none;pointer-events:none;z-index:3}
 .modal{position:fixed;inset:0;background:rgba(3,7,15,.85);display:none;align-items:center;justify-content:center;padding:20px;z-index:50}
 .modal.show{display:flex}
 .modal-box{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;max-width:min(860px,95vw)}
@@ -150,7 +164,8 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
   <section class="panel">
     <h2><span class="ico">🎥</span> 实时视频</h2>
     <div class="video-wrap">
-      <img id="stream" alt="视频未开启">
+      <img id="stream" crossorigin="anonymous" alt="视频未开启">
+      <canvas id="overlay"></canvas>
       <div id="streamOverlay">视频流已关闭<br><small>点击下方“开启视频流”开始预览</small></div>
       <div id="recBadge"><span class="dot"></span> 录制中 <span id="recTime">00:00</span></div>
     </div>
@@ -159,6 +174,27 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
       <button id="btnPhoto" class="ghost">📸 拍照</button>
       <button id="btnSavePhoto" class="ghost">💾 拍照存 SD</button>
       <button id="btnRecord" class="danger">⏺ 开始录制</button>
+    </div>
+
+    <div class="ai-box">
+      <div class="ai-head">
+        <h3>🤖 AI 智能识别</h3>
+        <select id="aiTask">
+          <option value="object" selected>物体识别</option>
+          <option value="wood" disabled>虫蛀检测（开发中）</option>
+          <option value="ebike" disabled>电动车检测（开发中）</option>
+          <option value="fire" disabled>火灾检测（开发中）</option>
+          <option value="measure" disabled>2D 物体测量（开发中）</option>
+          <option value="face" disabled>人脸检测（开发中）</option>
+          <option value="facerec" disabled>人脸识别（开发中）</option>
+          <option value="track" disabled>物体追踪（开发中）</option>
+        </select>
+        <button id="btnDetect" class="primary">识别当前画面</button>
+        <button id="btnAuto" class="ghost">连续识别</button>
+        <button id="btnSaveDetect" class="ghost">💾 保存标注图</button>
+      </div>
+      <div id="aiStatus" class="ai-status">就绪 — 点击“识别当前画面”，结果会框选在画面上</div>
+      <ul id="aiResults" class="ai-results"></ul>
     </div>
   </section>
 
@@ -279,6 +315,8 @@ $('#btnStream').onclick = () => {
     btn.textContent = '开启视频流';
     btn.classList.add('primary'); btn.classList.remove('danger');
     streaming = false;
+    const ovl = $('#overlay'); if(ovl) ovl.style.display = 'none';
+    lastObjs = [];
   }else{
     img.src = STREAM_URL + '?t=' + Date.now();
     ov.style.display = 'none';
@@ -451,9 +489,250 @@ async function loadStatus(){
   }
 }
 
+/* ---------------- AI 智能识别 ---------------- */
+const AI_OBJECT_PROMPT = `你是物体检测引擎。检测图片中的主要物体，只输出 JSON 数组，不要解释、不要 Markdown。
+格式：[{"label":"中文名称","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
+bbox 为归一化坐标 0-1（左上 x1,y1，右下 x2,y2），最多 10 个。`;
+const AI_THRESHOLD = 0.5;
+
+let aiCfg = { url:'', key:'', model:'', prompt:'', maxW: 416 };
+let autoTimer = null, analyzing = false, lastObjs = [], autoOn = false;
+
+function setAiStatus(msg, cls){
+  const el = $('#aiStatus');
+  el.textContent = msg;
+  el.className = 'ai-status' + (cls ? ' ' + cls : '');
+}
+function currentPrompt(){
+  return AI_OBJECT_PROMPT;
+}
+async function loadAiConfig(){
+  let server = { url:'', key:'', model:'' };
+  try{ server = await (await fetch('/ai/config')).json(); }catch(e){}
+  aiCfg.url = server.url || '';
+  aiCfg.key = server.key || '';
+  aiCfg.model = server.model || '';
+  aiCfg.prompt = AI_OBJECT_PROMPT;
+  aiCfg.maxW = 416;
+}
+function liveFrame(){
+  const img = $('#stream');
+  return (streaming && img.complete && img.naturalWidth > 0) ? img : null;
+}
+function captureFrame(){
+  return fetch('/capture?t=' + Date.now()).then(r => r.blob()).then(b => new Promise((res, rej) => {
+    const url = URL.createObjectURL(b);
+    const im = new Image();
+    im.onload = () => { res(im); setTimeout(() => URL.revokeObjectURL(url), 2000); };
+    im.onerror = () => rej(new Error('取帧失败'));
+    im.src = url;
+  }));
+}
+// Downscale before upload -> much smaller payload and faster inference
+function frameToDataURL(src){
+  const maxW = aiCfg.maxW || 416;
+  const sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
+  const scale = Math.min(1, maxW / sw);
+  const w = Math.max(1, Math.round(sw * scale)), h = Math.max(1, Math.round(sh * scale));
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  cv.getContext('2d').drawImage(src, 0, 0, w, h);
+  return { dataUrl: cv.toDataURL('image/jpeg', 0.62), w: w, h: h };
+}
+function parseDetections(text, imgW, imgH){
+  let s = String(text || '').trim();
+  s = s.replace(/^```[a-zA-Z]*\s*/, '').replace(/```\s*$/, '').trim();
+  let arr = null;
+  const a = s.indexOf('['), b = s.lastIndexOf(']');
+  if(a >= 0 && b > a){
+    try{ arr = JSON.parse(s.slice(a, b + 1)); }catch(e){}
+  }
+  if(!arr){
+    const a2 = text.indexOf('{'), b2 = text.lastIndexOf('}');
+    if(a2 >= 0 && b2 > a2){
+      try{
+        const o = JSON.parse(text.slice(a2, b2 + 1));
+        arr = o.objects || o.results || o.detections || o.items || [];
+      }catch(e){ arr = []; }
+    } else arr = [];
+  }
+  if(!Array.isArray(arr)) arr = arr.objects || arr.results || [];
+  const th = AI_THRESHOLD;
+  const W = imgW || 1, H = imgH || 1;
+  return arr.map(o => {
+    let bb = o.bbox || o.box || o.rect || o.rectangle || null;
+    if(Array.isArray(bb) && bb.length === 4){
+      let v = bb.map(Number);
+      const M = Math.max.apply(null, v);
+      // Qwen3-VL returns 0-1000 coordinates; some models return 0-1.
+      if(M > 1.5) v = v.map(x => x / 1000);
+      bb = v.map(x => Math.max(0, Math.min(1, x)));
+    } else bb = null;
+    const conf = Number(o.confidence != null ? o.confidence : (o.score != null ? o.score : 1));
+    return { label: o.label || o.name || o.class || o.object || '物体', confidence: isNaN(conf) ? 1 : conf, bbox: bb };
+  }).filter(o => o.confidence >= th);
+}
+const AI_COLORS = ['#22d3ee','#3b82f6','#f59e0b','#22c55e','#ef4444','#a855f7','#eab308','#ec4899'];
+function drawBoxes(ctx, objs, W, H){
+  const fs = Math.max(12, Math.round(W / 38));
+  objs.forEach((o, i) => {
+    if(!o.bbox) return;
+    const c = AI_COLORS[i % AI_COLORS.length];
+    const x = o.bbox[0] * W, y = o.bbox[1] * H;
+    const w = (o.bbox[2] - o.bbox[0]) * W, h = (o.bbox[3] - o.bbox[1]) * H;
+    ctx.lineWidth = Math.max(2, Math.round(W / 220));
+    ctx.strokeStyle = c;
+    ctx.strokeRect(x, y, w, h);
+    ctx.font = '600 ' + fs + 'px system-ui,-apple-system,sans-serif';
+    ctx.textBaseline = 'top';
+    const label = o.label + ' ' + Math.round(o.confidence * 100) + '%';
+    const tw = ctx.measureText(label).width + 12, th = fs + 8;
+    const by = y - th < 0 ? y : y - th;
+    ctx.fillStyle = c; ctx.fillRect(x, by, tw, th);
+    ctx.fillStyle = '#04121f'; ctx.fillText(label, x + 6, by + 4);
+  });
+}
+function overlayRect(){
+  const img = $('#stream');
+  const cw = img.clientWidth, ch = img.clientHeight;
+  const nw = img.naturalWidth, nh = img.naturalHeight;
+  if(!cw || !ch || !nw || !nh) return null;
+  const s = Math.min(cw / nw, ch / nh);
+  const w = nw * s, h = nh * s;
+  return { left: (cw - w) / 2, top: (ch - h) / 2, w: w, h: h };
+}
+// Transparent canvas that sits exactly over the live video (never hides the stream)
+function drawOverlay(objs){
+  const cv = $('#overlay');
+  const r = overlayRect();
+  if(!r){ cv.style.display = 'none'; return; }
+  cv.style.left = r.left + 'px'; cv.style.top = r.top + 'px';
+  cv.style.width = r.w + 'px'; cv.style.height = r.h + 'px';
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.max(1, Math.round(r.w * dpr));
+  cv.height = Math.max(1, Math.round(r.h * dpr));
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if(!objs.length){ cv.style.display = 'none'; return; }
+  cv.style.display = 'block';
+  drawBoxes(ctx, objs, cv.width, cv.height);
+}
+function renderResults(objs){
+  const ul = $('#aiResults'); ul.innerHTML = '';
+  if(!objs.length){ ul.innerHTML = '<li>未检测到物体</li>'; return; }
+  objs.forEach(o => {
+    const li = document.createElement('li');
+    const n = document.createElement('span'); n.textContent = o.label;
+    const bar = document.createElement('span'); bar.className = 'bar';
+    const fill = document.createElement('i'); fill.style.width = Math.round(o.confidence * 100) + '%';
+    bar.appendChild(fill);
+    const p = document.createElement('span'); p.textContent = Math.round(o.confidence * 100) + '%';
+    li.append(n, bar, p); ul.appendChild(li);
+  });
+}
+async function analyze(){
+  if(analyzing) return;
+  if(!aiCfg.key){ setAiStatus('未配置 API 密钥，请在 ai_config.h 中填写', 'error'); return; }
+  analyzing = true;
+  setAiStatus('识别中…（视频流保持实时）', 'busy');
+  const t0 = performance.now();
+  const controller = new AbortController();
+  const to = setTimeout(() => controller.abort(), 25000);
+  try{
+    let src = liveFrame();
+    let usedLive = !!src;
+    if(!src){
+      src = await captureFrame();
+      if(!streaming){ $('#stream').src = src.src; $('#streamOverlay').style.display = 'none'; }
+    }
+    let fr;
+    try{
+      fr = frameToDataURL(src);
+    }catch(err){
+      // live frame could not be read (CORS / tainted canvas) -> fall back to /capture
+      src = await captureFrame();
+      usedLive = false;
+      fr = frameToDataURL(src);
+    }
+    const payload = {
+      model: aiCfg.model,
+      messages: [{ role:'user', content:[
+        { type:'image_url', image_url:{ url: fr.dataUrl } },
+        { type:'text', text: currentPrompt() }
+      ]}],
+      max_tokens: 300,
+      temperature: 0
+    };
+    const resp = await fetch(aiCfg.url, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + aiCfg.key },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    if(!resp.ok){
+      const t = await resp.text();
+      throw new Error('HTTP ' + resp.status + ' ' + t.slice(0, 140));
+    }
+    const j = await resp.json();
+    const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+    const objs = parseDetections(content, fr.w, fr.h);
+    lastObjs = objs;
+    drawOverlay(objs);
+    renderResults(objs);
+    const dt = Math.round(performance.now() - t0);
+    const tk = j.usage ? ' · tokens ' + j.usage.total_tokens : '';
+    setAiStatus('识别完成：' + objs.length + ' 个目标 · ' + dt + ' ms' + tk + (usedLive ? '' : '（离线抓帧）'));
+  }catch(e){
+    if(e && e.name === 'AbortError') setAiStatus('识别超时，已取消', 'error');
+    else setAiStatus('识别失败：' + e.message, 'error');
+  }finally{
+    clearTimeout(to);
+    analyzing = false;
+  }
+}
+async function autoLoop(){
+  if(!autoOn) return;
+  await analyze();
+  if(!autoOn) return;
+  autoTimer = setTimeout(autoLoop, 400);   // start next only after the previous finished
+}
+$('#btnDetect').onclick = analyze;
+$('#btnSaveDetect').onclick = () => {
+  if(!lastObjs.length){ toast('请先识别当前画面', false); return; }
+  const src = liveFrame();
+  const w = src ? src.naturalWidth : 640, h = src ? src.naturalHeight : 480;
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  if(src) ctx.drawImage(src, 0, 0, w, h);
+  drawBoxes(ctx, lastObjs, w, h);
+  const name = 'detect_' + Date.now() + '.jpg';
+  cv.toBlob(async blob => {
+    try{
+      const r = await (await fetch('/upload?file=' + encodeURIComponent(name), { method:'POST', body:blob })).json();
+      toast(r.ok ? '已保存到 SD: ' + name : (r.msg || '保存失败'), r.ok);
+      if(r.ok) loadFiles();
+    }catch(e){ toast('保存失败', false); }
+  }, 'image/jpeg', 0.92);
+};
+$('#btnAuto').onclick = () => {
+  const b = $('#btnAuto');
+  if(autoOn){
+    autoOn = false; clearTimeout(autoTimer); autoTimer = null;
+    b.textContent = '连续识别'; b.classList.add('ghost'); b.classList.remove('primary');
+    setAiStatus('已停止连续识别');
+  }else{
+    autoOn = true;
+    b.textContent = '⏹ 停止连续'; b.classList.remove('ghost'); b.classList.add('primary');
+    toast('已开启连续识别');
+    autoLoop();
+  }
+};
+
 /* ---------------- 初始化 ---------------- */
 loadStatus();
 loadFiles();
+loadAiConfig();
+window.addEventListener('resize', () => { if(lastObjs.length) drawOverlay(lastObjs); });
+$('#stream').addEventListener('load', () => { if(lastObjs.length) drawOverlay(lastObjs); });
 setInterval(loadFiles, 15000);
 setInterval(loadStatus, 30000);
 </script>
