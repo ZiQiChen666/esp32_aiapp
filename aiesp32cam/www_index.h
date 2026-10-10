@@ -196,7 +196,7 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
           <option value="object" selected>物体识别</option>
           <option value="insect">虫蛀检测</option>
           <option value="elevator">电梯安全检测</option>
-          <option value="fire" disabled>火灾检测（开发中）</option>
+          <option value="fire">火灾检测</option>
           <option value="measure">2D 物体测量</option>
           <option value="face" disabled>人脸检测（开发中）</option>
           <option value="facerec" disabled>人脸识别（开发中）</option>
@@ -538,11 +538,16 @@ bbox 为归一化坐标 0-1000（左上 x1,y1，右下 x2,y2）。若没有规�
 const AI_MEASURE_PROMPT = `你是2D测量引擎。请识别图中所有规则形状（圆形、矩形、正方形），只输出JSON数组，不要解释。
 格式：[{"label":"圆形|矩形|正方形","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
 bbox 为归一化坐标 0-1000（左上 x1,y1，右下 x2,y2）。若没有，输出 []。`;
+const AI_FIRE_PROMPT = `你是火灾检测引擎。请判断画面中是否存在火灾迹象：明火/火焰、烟雾、阴燃、异常火光、高温燃烧痕迹。
+只输出 JSON 数组，不要解释、不要 Markdown。
+格式：[{"label":"中文名称","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
+bbox 为归一化坐标 0-1000（左上 x1,y1，右下 x2,y2）。如果没有发现火灾迹象，输出 []。`;
 const AI_THRESHOLD = 0.5;
 const AI_TASKS = {
   object:   { name:'物体识别',     unit:'个物体',   prompt: AI_OBJECT_PROMPT,   maxW: 416 },
   insect:   { name:'虫蛀检测',     unit:'只虫子',   prompt: AI_INSECT_PROMPT,   maxW: 640 },
-  elevator: { name:'电梯安全检测', unit:'个违禁物', prompt: AI_ELEVATOR_PROMPT, maxW: 512, danger: true },
+  elevator: { name:'电梯安全检测', unit:'个违禁物', prompt: AI_ELEVATOR_PROMPT, maxW: 512, danger: true, dangerText:'⚠ 危险：检测到电动车 / 电池，禁止进入电梯！' },
+  fire:     { name:'火灾检测',     unit:'处火情',   prompt: AI_FIRE_PROMPT,     maxW: 512, danger: true, dangerText:'⚠ 火灾警报：检测到火焰 / 烟雾，请立即处置！' },
   measure:  { name:'2D 物体测量',  unit:'个形状',   prompt: AI_MEASURE_PROMPT,  maxW: 640, measure: true }
 };
 let currentTask = 'object';
@@ -737,6 +742,7 @@ async function analyze(){
     const task = AI_TASKS[currentTask] || AI_TASKS.object;
     const danger = task.danger && objs.length > 0;
     setAiStatus(task.name + '：' + (objs.length ? (danger ? '⚠ 发现 ' : '') + objs.length + ' ' + task.unit : '未发现') + ' · ' + dt + ' ms' + tk + (usedLive ? '' : '（离线抓帧）'), danger ? 'error' : '');
+    $('#dangerBanner').textContent = task.dangerText || '⚠ 危险！';
     $('#dangerBanner').style.display = danger ? 'block' : 'none';
   }catch(e){
     if(e && e.name === 'AbortError') setAiStatus('识别超时，已取消', 'error');
