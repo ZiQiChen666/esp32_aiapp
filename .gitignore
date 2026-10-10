@@ -16,3 +16,7 @@ build/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Local secrets: contains your SiliconFlow API key.
+# Copy ai_config.example.h -> ai_config.h and fill in your own key.
+aiesp32cam/ai_config.h

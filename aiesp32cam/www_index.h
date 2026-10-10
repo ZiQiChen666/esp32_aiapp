@@ -198,7 +198,7 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
           <option value="elevator">电梯安全检测</option>
           <option value="fire">火灾检测</option>
           <option value="measure">2D 物体测量</option>
-          <option value="face" disabled>人脸检测（开发中）</option>
+          <option value="face">人脸检测</option>
           <option value="facerec" disabled>人脸识别（开发中）</option>
           <option value="track" disabled>物体追踪（开发中）</option>
         </select>
@@ -542,12 +542,17 @@ const AI_FIRE_PROMPT = `你是火灾检测引擎。请判断画面中是否存�
 只输出 JSON 数组，不要解释、不要 Markdown。
 格式：[{"label":"中文名称","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
 bbox 为归一化坐标 0-1000（左上 x1,y1，右下 x2,y2）。如果没有发现火灾迹象，输出 []。`;
+const AI_FACE_PROMPT = `你是人脸检测引擎。请检测画面中所有的人脸（包括侧脸、部分遮挡的脸、不同尺度）。
+只输出 JSON 数组，不要解释、不要 Markdown。
+格式：[{"label":"人脸","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
+bbox 为归一化坐标 0-1000（左上 x1,y1，右下 x2,y2）。如果没有检测到人脸，输出 []。`;
 const AI_THRESHOLD = 0.5;
 const AI_TASKS = {
   object:   { name:'物体识别',     unit:'个物体',   prompt: AI_OBJECT_PROMPT,   maxW: 416 },
   insect:   { name:'虫蛀检测',     unit:'只虫子',   prompt: AI_INSECT_PROMPT,   maxW: 640 },
   elevator: { name:'电梯安全检测', unit:'个违禁物', prompt: AI_ELEVATOR_PROMPT, maxW: 512, danger: true, dangerText:'⚠ 危险：检测到电动车 / 电池，禁止进入电梯！' },
   fire:     { name:'火灾检测',     unit:'处火情',   prompt: AI_FIRE_PROMPT,     maxW: 512, danger: true, dangerText:'⚠ 火灾警报：检测到火焰 / 烟雾，请立即处置！' },
+  face:     { name:'人脸检测',     unit:'张人脸',   prompt: AI_FACE_PROMPT,     maxW: 512 },
   measure:  { name:'2D 物体测量',  unit:'个形状',   prompt: AI_MEASURE_PROMPT,  maxW: 640, measure: true }
 };
 let currentTask = 'object';
