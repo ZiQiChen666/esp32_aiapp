@@ -130,6 +130,14 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
 .ai-results li{background:#0d1728;border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:12px;display:flex;gap:8px;align-items:center}
 .ai-results .bar{width:46px;height:6px;border-radius:99px;background:#243352;overflow:hidden}
 .ai-results .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.face-lib-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0 8px;font-size:13px;color:var(--muted)}
+.face-lib-head .sp{flex:1}
+.face-lib-head button{padding:6px 10px;font-size:12px}
+.face-lib-list{display:flex;flex-wrap:wrap;gap:10px}
+.face-item{display:flex;align-items:center;gap:8px;background:#0d1728;border:1px solid var(--line);border-radius:12px;padding:6px 10px}
+.face-item img{width:42px;height:42px;border-radius:9px;object-fit:cover;background:#000}
+.face-name{font-size:13px;font-weight:600;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.face-item button{padding:5px 9px;font-size:12px}
 .measure-panel{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
 .measure-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
 .measure-actions{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap}
@@ -199,7 +207,7 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
           <option value="fire">火灾检测</option>
           <option value="measure">2D 物体测量</option>
           <option value="face">人脸检测</option>
-          <option value="facerec" disabled>人脸识别（开发中）</option>
+          <option value="facerec">人脸识别</option>
           <option value="track" disabled>物体追踪（开发中）</option>
         </select>
         <button id="btnDetect" class="primary ai-tool">识别当前画面</button>
@@ -223,6 +231,33 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
         </div>
         <div id="mStatus" class="ai-status">请把参考物放到校准高度，选好形状和尺寸后点击“校准”</div>
         <ul id="mResults" class="ai-results"></ul>
+      </div>
+      <div id="facePanel" class="measure-panel" style="display:none">
+        <div class="measure-grid">
+          <div class="field"><label>姓名</label><input type="text" id="fName" placeholder="输入姓名"></div>
+          <div class="field"><label>判定阈值</label>
+            <select id="fThreshold">
+              <option value="0.45">严格 0.45</option>
+              <option value="0.55" selected>标准 0.55</option>
+              <option value="0.65">宽松 0.65</option>
+            </select>
+          </div>
+        </div>
+        <div class="measure-actions">
+          <button id="btnFaceEnroll" class="primary">📝 登记人脸</button>
+          <button id="btnFaceRecognize" class="ok">🔍 识别</button>
+          <button id="btnFaceAuto" class="ghost">连续识别</button>
+        </div>
+        <div id="fStatus" class="ai-status">正对镜头，输入姓名后点“登记人脸”；识别时会自动比对人脸库</div>
+        <div class="face-lib-head">
+          <span>人脸库 <b id="faceLibCount">0</b> 条</span>
+          <span class="sp"></span>
+          <button id="btnFaceExport" class="ghost">导出到SD</button>
+          <button id="btnFaceImport" class="ghost">从SD导入</button>
+          <button id="btnFaceClear" class="danger">清空</button>
+        </div>
+        <div id="faceLibList" class="face-lib-list"></div>
+        <ul id="fResults" class="ai-results" style="margin-top:8px"></ul>
       </div>
     </div>
   </section>
@@ -309,6 +344,7 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
 
 <div id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const STREAM_URL = 'http://' + location.hostname + ':81/stream';
@@ -553,6 +589,7 @@ const AI_TASKS = {
   elevator: { name:'电梯安全检测', unit:'个违禁物', prompt: AI_ELEVATOR_PROMPT, maxW: 512, danger: true, dangerText:'⚠ 危险：检测到电动车 / 电池，禁止进入电梯！' },
   fire:     { name:'火灾检测',     unit:'处火情',   prompt: AI_FIRE_PROMPT,     maxW: 512, danger: true, dangerText:'⚠ 火灾警报：检测到火焰 / 烟雾，请立即处置！' },
   face:     { name:'人脸检测',     unit:'张人脸',   prompt: AI_FACE_PROMPT,     maxW: 512 },
+  facerec:  { name:'人脸识别',     unit:'张人脸',   prompt:'',                  maxW: 512, face: true },
   measure:  { name:'2D 物体测量',  unit:'个形状',   prompt: AI_MEASURE_PROMPT,  maxW: 640, measure: true }
 };
 let currentTask = 'object';
@@ -640,7 +677,7 @@ function drawBoxes(ctx, objs, W, H){
   const fs = Math.max(12, Math.round(W / 38));
   objs.forEach((o, i) => {
     if(!o.bbox) return;
-    const c = danger ? '#ef4444' : AI_COLORS[i % AI_COLORS.length];
+    const c = danger ? '#ef4444' : (o.matched === true ? '#22c55e' : (o.matched === false ? '#ef4444' : AI_COLORS[i % AI_COLORS.length]));
     const x = o.bbox[0] * W, y = o.bbox[1] * H;
     const w = (o.bbox[2] - o.bbox[0]) * W, h = (o.bbox[3] - o.bbox[1]) * H;
     ctx.lineWidth = Math.max(2, Math.round(W / 220));
@@ -795,9 +832,12 @@ $('#btnAuto').onclick = () => {
   }
 };
 function updateTaskUI(){
-  const isMeasure = !!((AI_TASKS[currentTask] || {}).measure);
-  document.querySelectorAll('.ai-tool').forEach(el => { el.style.display = isMeasure ? 'none' : ''; });
+  const t = AI_TASKS[currentTask] || {};
+  const isMeasure = !!t.measure, isFace = !!t.face;
+  document.querySelectorAll('.ai-tool').forEach(el => { el.style.display = (isMeasure || isFace) ? 'none' : ''; });
   const mp = $('#measurePanel'); if(mp) mp.style.display = isMeasure ? 'block' : 'none';
+  const fp = $('#facePanel'); if(fp) fp.style.display = isFace ? 'block' : 'none';
+  if(isFace){ renderFaceLibrary(); ensureFaceModels(); }
 }
 function updateMeasureShape(){
   const c = $('#mShape').value === 'circle';
@@ -929,6 +969,152 @@ $('#aiTask').onchange = e => {
   updateTaskUI();
   setAiStatus('已切换到「' + AI_TASKS[currentTask].name + '」' + (AI_TASKS[currentTask].measure ? '，请先校准' : '，点击“识别当前画面”开始'));
 };
+
+/* ---------------- 人脸识别（face-api.js，本地浏览器运算） ---------------- */
+const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights';
+const FACE_LIB_KEY = 'face_lib';
+let faceModelsReady = false, faceLoading = null, faceAutoOn = false, faceAutoTimer = null;
+
+function setFStatus(msg, isErr, busy){
+  const el = $('#fStatus');
+  el.textContent = msg;
+  el.className = 'ai-status' + (isErr ? ' error' : (busy ? ' busy' : ''));
+}
+function loadFaceLib(){ try{ return JSON.parse(localStorage.getItem(FACE_LIB_KEY) || '[]'); }catch(e){ return []; } }
+function saveFaceLib(lib){
+  try{ localStorage.setItem(FACE_LIB_KEY, JSON.stringify(lib)); return true; }
+  catch(e){ toast('人脸库保存失败（可能超出浏览器容量）', false); return false; }
+}
+async function ensureFaceModels(){
+  if(faceModelsReady) return true;
+  if(typeof faceapi === 'undefined'){ setFStatus('face-api 库未加载（需联网访问 CDN）', true); return false; }
+  if(faceLoading) return faceLoading;
+  setFStatus('正在加载人脸模型（首次约 6MB，请稍候）…', false, true);
+  faceLoading = (async () => {
+    await faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_URL);
+    await faceapi.nets.faceLandmark68TinyNet.loadFromUri(FACE_MODEL_URL);
+    await faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_URL);
+    faceModelsReady = true;
+    setFStatus('人脸模型已就绪，可开始登记 / 识别');
+    return true;
+  })();
+  try{ return await faceLoading; }
+  catch(e){ faceLoading = null; setFStatus('人脸模型加载失败：' + e.message, true); return false; }
+}
+function faceOpts(){ return new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 }); }
+async function grabCanvas(){
+  let src = liveFrame();
+  if(!src){ src = await captureFrame(); if(!streaming){ $('#stream').src = src.src; $('#streamOverlay').style.display = 'none'; } }
+  const w = src.naturalWidth || src.width, h = src.naturalHeight || src.height;
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  cv.getContext('2d').drawImage(src, 0, 0, w, h);
+  return cv;
+}
+function cropThumb(srcCanvas, box){
+  const size = Math.max(box.width, box.height) * 1.25;
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+  const x = Math.max(0, cx - size / 2), y = Math.max(0, cy - size / 2);
+  const w = Math.min(srcCanvas.width - x, size), h = Math.min(srcCanvas.height - y, size);
+  const t = document.createElement('canvas'); t.width = 96; t.height = 96;
+  t.getContext('2d').drawImage(srcCanvas, x, y, w, h, 0, 0, 96, 96);
+  return t.toDataURL('image/jpeg', 0.7);
+}
+function renderFaceLibrary(){
+  const lib = loadFaceLib();
+  $('#faceLibCount').textContent = lib.length;
+  const box = $('#faceLibList'); box.innerHTML = '';
+  if(!lib.length){ box.innerHTML = '<div class="empty" style="padding:10px">人脸库为空，请先登记</div>'; return; }
+  lib.forEach((p, i) => {
+    const item = document.createElement('div'); item.className = 'face-item';
+    const img = document.createElement('img'); img.src = p.thumb || '';
+    const nm = document.createElement('span'); nm.className = 'face-name'; nm.textContent = p.name;
+    const del = document.createElement('button'); del.className = 'danger'; del.textContent = '删除';
+    del.onclick = () => { const l = loadFaceLib(); l.splice(i, 1); saveFaceLib(l); renderFaceLibrary(); setFStatus('已删除 ' + p.name); };
+    item.append(img, nm, del); box.appendChild(item);
+  });
+}
+async function faceEnroll(){
+  const name = ($('#fName').value || '').trim();
+  if(!name){ setFStatus('请输入姓名', true); return; }
+  if(!await ensureFaceModels()) return;
+  setFStatus('登记中…请保持正对镜头', false, true);
+  try{
+    const cv = await grabCanvas();
+    const res = await faceapi.detectSingleFace(cv, faceOpts()).withFaceLandmarks(true).withFaceDescriptor();
+    if(!res){ setFStatus('未检测到人脸，请正对镜头、靠近一些', true); return; }
+    const lib = loadFaceLib();
+    lib.push({ name: name, descriptor: Array.from(res.descriptor), thumb: cropThumb(cv, res.detection.box), time: Date.now() });
+    saveFaceLib(lib);
+    renderFaceLibrary();
+    setFStatus('✓ 已登记：' + name + '（人脸库共 ' + lib.length + ' 条）');
+  }catch(e){ setFStatus('登记失败：' + e.message, true); }
+}
+async function faceRecognize(){
+  if(!await ensureFaceModels()) return;
+  const lib = loadFaceLib();
+  if(!lib.length){ setFStatus('人脸库为空，请先登记', true); return; }
+  setFStatus('识别中…', false, true);
+  try{
+    const cv = await grabCanvas();
+    const dets = await faceapi.detectAllFaces(cv, faceOpts()).withFaceLandmarks(true).withFaceDescriptors();
+    if(!dets.length){ lastObjs = []; drawOverlay([]); $('#fResults').innerHTML = '<li>未检测到人脸</li>'; setFStatus('未检测到人脸'); return; }
+    const th = parseFloat($('#fThreshold').value) || 0.55;
+    const W = cv.width, H = cv.height;
+    const res = dets.map(d => {
+      let best = null, bestDist = Infinity;
+      lib.forEach(p => {
+        const dist = faceapi.euclideanDistance(d.descriptor, new Float32Array(p.descriptor));
+        if(dist < bestDist){ bestDist = dist; best = p; }
+      });
+      const matched = !!best && bestDist <= th;
+      const nm = matched ? best.name : '未知';
+      const b = d.detection.box;
+      return {
+        label: nm, matched: matched, confidence: Math.max(0, 1 - bestDist),
+        bbox: [b.x / W, b.y / H, (b.x + b.width) / W, (b.y + b.height) / H],
+        display: nm + ' (' + bestDist.toFixed(2) + ')'
+      };
+    });
+    lastObjs = res;
+    drawOverlay(res);
+    const ul = $('#fResults'); ul.innerHTML = '';
+    res.forEach(o => { const li = document.createElement('li'); li.textContent = o.display + (o.matched ? ' ✓' : ' ✗'); ul.appendChild(li); });
+    setFStatus('识别完成：' + res.length + ' 张人脸，' + res.filter(o => o.matched).length + ' 张已识别');
+  }catch(e){ setFStatus('识别失败：' + e.message, true); }
+}
+async function faceAutoLoop(){
+  if(!faceAutoOn) return;
+  await faceRecognize();
+  if(!faceAutoOn) return;
+  faceAutoTimer = setTimeout(faceAutoLoop, 900);
+}
+$('#btnFaceEnroll').onclick = faceEnroll;
+$('#btnFaceRecognize').onclick = faceRecognize;
+$('#btnFaceAuto').onclick = () => {
+  const b = $('#btnFaceAuto');
+  if(faceAutoOn){ faceAutoOn = false; clearTimeout(faceAutoTimer); b.textContent = '连续识别'; b.classList.add('ghost'); b.classList.remove('primary'); setFStatus('已停止连续识别'); }
+  else { faceAutoOn = true; b.textContent = '⏹ 停止连续'; b.classList.remove('ghost'); b.classList.add('primary'); faceAutoLoop(); }
+};
+$('#btnFaceClear').onclick = () => { if(!confirm('确定清空整个人脸库？')) return; saveFaceLib([]); renderFaceLibrary(); setFStatus('人脸库已清空'); };
+$('#btnFaceExport').onclick = async () => {
+  const lib = loadFaceLib();
+  if(!lib.length){ setFStatus('人脸库为空', true); return; }
+  try{
+    const r = await (await fetch('/upload?file=face_library.json', { method:'POST', body: JSON.stringify(lib) })).json();
+    setFStatus(r.ok ? '已导出到 SD：face_library.json（' + lib.length + ' 条）' : (r.msg || '导出失败'), !r.ok);
+    if(r.ok) loadFiles();
+  }catch(e){ setFStatus('导出失败：' + e.message, true); }
+};
+$('#btnFaceImport').onclick = async () => {
+  try{
+    const r = await fetch('/download?file=face_library.json&t=' + Date.now());
+    if(!r.ok) throw new Error('SD 上没有 face_library.json');
+    const lib = await r.json();
+    if(!Array.isArray(lib)) throw new Error('文件格式错误');
+    saveFaceLib(lib); renderFaceLibrary(); setFStatus('已从 SD 导入 ' + lib.length + ' 条人脸');
+  }catch(e){ setFStatus('导入失败：' + e.message, true); }
+};
+renderFaceLibrary();
 
 /* ---------------- 初始化 ---------------- */
 loadStatus();
