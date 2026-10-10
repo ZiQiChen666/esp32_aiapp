@@ -130,6 +130,10 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
 .ai-results li{background:#0d1728;border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:12px;display:flex;gap:8px;align-items:center}
 .ai-results .bar{width:46px;height:6px;border-radius:99px;background:#243352;overflow:hidden}
 .ai-results .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+#dangerBanner{position:absolute;left:0;right:0;top:0;padding:10px 14px;z-index:5;display:none;
+  background:linear-gradient(90deg,#dc2626,#b91c1c);color:#fff;font-weight:700;font-size:14px;
+  text-align:center;letter-spacing:.5px;box-shadow:0 6px 18px rgba(220,38,38,.5);animation:dangerPulse 1s infinite}
+@keyframes dangerPulse{50%{opacity:.72}}
 #overlay{position:absolute;display:none;pointer-events:none;z-index:3}
 .modal{position:fixed;inset:0;background:rgba(3,7,15,.85);display:none;align-items:center;justify-content:center;padding:20px;z-index:50}
 .modal.show{display:flex}
@@ -168,6 +172,7 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
       <canvas id="overlay"></canvas>
       <div id="streamOverlay">视频流已关闭<br><small>点击下方“开启视频流”开始预览</small></div>
       <div id="recBadge"><span class="dot"></span> 录制中 <span id="recTime">00:00</span></div>
+      <div id="dangerBanner">⚠ 危险：检测到电动车 / 电池，禁止进入电梯！</div>
     </div>
     <div class="controls">
       <button id="btnStream" class="primary">开启视频流</button>
@@ -181,8 +186,8 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
         <h3>🤖 AI 智能识别</h3>
         <select id="aiTask">
           <option value="object" selected>物体识别</option>
-          <option value="wood" disabled>虫蛀检测（开发中）</option>
-          <option value="ebike" disabled>电动车检测（开发中）</option>
+          <option value="insect">虫蛀检测</option>
+          <option value="elevator">电梯安全检测</option>
           <option value="fire" disabled>火灾检测（开发中）</option>
           <option value="measure" disabled>2D 物体测量（开发中）</option>
           <option value="face" disabled>人脸检测（开发中）</option>
@@ -316,6 +321,7 @@ $('#btnStream').onclick = () => {
     btn.classList.add('primary'); btn.classList.remove('danger');
     streaming = false;
     const ovl = $('#overlay'); if(ovl) ovl.style.display = 'none';
+    const db = $('#dangerBanner'); if(db) db.style.display = 'none';
     lastObjs = [];
   }else{
     img.src = STREAM_URL + '?t=' + Date.now();
@@ -493,7 +499,22 @@ async function loadStatus(){
 const AI_OBJECT_PROMPT = `你是物体检测引擎。检测图片中的主要物体，只输出 JSON 数组，不要解释、不要 Markdown。
 格式：[{"label":"中文名称","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
 bbox 为归一化坐标 0-1（左上 x1,y1，右下 x2,y2），最多 10 个。`;
+const AI_INSECT_PROMPT = `你是虫子检测引擎。请判断画面中是否存在虫子（例如米象、谷蠹、蛾/飞蛾、幼虫、蚂蚁、蟑螂、蜘蛛、蝇类等），包括体型很小的虫子。
+只输出 JSON 数组，不要解释、不要 Markdown。
+格式：[{"label":"虫子中文名称","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
+bbox 为归一化坐标 0-1000（左上 x1,y1，右下 x2,y2）。如果没有发现任何虫子，输出 []。`;
+const AI_ELEVATOR_PROMPT = `你是电梯安全监控引擎。请判断电梯轿厢内是否出现禁止入内的物品：
+电动自行车/电动踏板车/电动摩托、电动车电池、锂电池、铅酸电池、电池包/充电器、电瓶。
+只输出 JSON 数组，不要解释、不要 Markdown。
+格式：[{"label":"物品中文名称","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
+bbox 为归一化坐标 0-1000（左上 x1,y1，右下 x2,y2）。如果画面中没有电动车/电池等违禁物，输出 []。`;
 const AI_THRESHOLD = 0.5;
+const AI_TASKS = {
+  object:   { name:'物体识别',     unit:'个物体',   prompt: AI_OBJECT_PROMPT,   maxW: 416 },
+  insect:   { name:'虫蛀检测',     unit:'只虫子',   prompt: AI_INSECT_PROMPT,   maxW: 640 },
+  elevator: { name:'电梯安全检测', unit:'个违禁物', prompt: AI_ELEVATOR_PROMPT, maxW: 512, danger: true }
+};
+let currentTask = 'object';
 
 let aiCfg = { url:'', key:'', model:'', prompt:'', maxW: 416 };
 let autoTimer = null, analyzing = false, lastObjs = [], autoOn = false;
@@ -504,7 +525,7 @@ function setAiStatus(msg, cls){
   el.className = 'ai-status' + (cls ? ' ' + cls : '');
 }
 function currentPrompt(){
-  return AI_OBJECT_PROMPT;
+  return (AI_TASKS[currentTask] || AI_TASKS.object).prompt;
 }
 async function loadAiConfig(){
   let server = { url:'', key:'', model:'' };
@@ -512,7 +533,6 @@ async function loadAiConfig(){
   aiCfg.url = server.url || '';
   aiCfg.key = server.key || '';
   aiCfg.model = server.model || '';
-  aiCfg.prompt = AI_OBJECT_PROMPT;
   aiCfg.maxW = 416;
 }
 function liveFrame(){
@@ -530,7 +550,7 @@ function captureFrame(){
 }
 // Downscale before upload -> much smaller payload and faster inference
 function frameToDataURL(src){
-  const maxW = aiCfg.maxW || 416;
+  const maxW = (AI_TASKS[currentTask] && AI_TASKS[currentTask].maxW) || aiCfg.maxW || 416;
   const sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
   const scale = Math.min(1, maxW / sw);
   const w = Math.max(1, Math.round(sw * scale)), h = Math.max(1, Math.round(sh * scale));
@@ -568,15 +588,18 @@ function parseDetections(text, imgW, imgH){
       bb = v.map(x => Math.max(0, Math.min(1, x)));
     } else bb = null;
     const conf = Number(o.confidence != null ? o.confidence : (o.score != null ? o.score : 1));
-    return { label: o.label || o.name || o.class || o.object || '物体', confidence: isNaN(conf) ? 1 : conf, bbox: bb };
+    const sev = o.severity || o.level || '';
+    const label = (o.label || o.name || o.class || o.object || '目标') + (sev ? ' · ' + sev : '');
+    return { label: label, confidence: isNaN(conf) ? 1 : conf, bbox: bb };
   }).filter(o => o.confidence >= th);
 }
 const AI_COLORS = ['#22d3ee','#3b82f6','#f59e0b','#22c55e','#ef4444','#a855f7','#eab308','#ec4899'];
 function drawBoxes(ctx, objs, W, H){
+  const danger = (AI_TASKS[currentTask] || {}).danger && objs.length > 0;
   const fs = Math.max(12, Math.round(W / 38));
   objs.forEach((o, i) => {
     if(!o.bbox) return;
-    const c = AI_COLORS[i % AI_COLORS.length];
+    const c = danger ? '#ef4444' : AI_COLORS[i % AI_COLORS.length];
     const x = o.bbox[0] * W, y = o.bbox[1] * H;
     const w = (o.bbox[2] - o.bbox[0]) * W, h = (o.bbox[3] - o.bbox[1]) * H;
     ctx.lineWidth = Math.max(2, Math.round(W / 220));
@@ -618,7 +641,7 @@ function drawOverlay(objs){
 }
 function renderResults(objs){
   const ul = $('#aiResults'); ul.innerHTML = '';
-  if(!objs.length){ ul.innerHTML = '<li>未检测到物体</li>'; return; }
+  if(!objs.length){ ul.innerHTML = '<li>未检测到目标</li>'; return; }
   objs.forEach(o => {
     const li = document.createElement('li');
     const n = document.createElement('span'); n.textContent = o.label;
@@ -680,7 +703,10 @@ async function analyze(){
     renderResults(objs);
     const dt = Math.round(performance.now() - t0);
     const tk = j.usage ? ' · tokens ' + j.usage.total_tokens : '';
-    setAiStatus('识别完成：' + objs.length + ' 个目标 · ' + dt + ' ms' + tk + (usedLive ? '' : '（离线抓帧）'));
+    const task = AI_TASKS[currentTask] || AI_TASKS.object;
+    const danger = task.danger && objs.length > 0;
+    setAiStatus(task.name + '：' + (objs.length ? (danger ? '⚠ 发现 ' : '') + objs.length + ' ' + task.unit : '未发现') + ' · ' + dt + ' ms' + tk + (usedLive ? '' : '（离线抓帧）'), danger ? 'error' : '');
+    $('#dangerBanner').style.display = danger ? 'block' : 'none';
   }catch(e){
     if(e && e.name === 'AbortError') setAiStatus('识别超时，已取消', 'error');
     else setAiStatus('识别失败：' + e.message, 'error');
@@ -704,7 +730,7 @@ $('#btnSaveDetect').onclick = () => {
   const ctx = cv.getContext('2d');
   if(src) ctx.drawImage(src, 0, 0, w, h);
   drawBoxes(ctx, lastObjs, w, h);
-  const name = 'detect_' + Date.now() + '.jpg';
+  const name = currentTask + '_' + Date.now() + '.jpg';
   cv.toBlob(async blob => {
     try{
       const r = await (await fetch('/upload?file=' + encodeURIComponent(name), { method:'POST', body:blob })).json();
@@ -725,6 +751,15 @@ $('#btnAuto').onclick = () => {
     toast('已开启连续识别');
     autoLoop();
   }
+};
+$('#aiTask').onchange = e => {
+  if(!AI_TASKS[e.target.value]){ e.target.value = currentTask; return; }
+  currentTask = e.target.value;
+  lastObjs = [];
+  $('#overlay').style.display = 'none';
+  $('#aiResults').innerHTML = '';
+  $('#dangerBanner').style.display = 'none';
+  setAiStatus('已切换到「' + AI_TASKS[currentTask].name + '」，点击“识别当前画面”开始');
 };
 
 /* ---------------- 初始化 ---------------- */
