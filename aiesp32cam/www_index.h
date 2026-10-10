@@ -130,6 +130,14 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
 .ai-results li{background:#0d1728;border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:12px;display:flex;gap:8px;align-items:center}
 .ai-results .bar{width:46px;height:6px;border-radius:99px;background:#243352;overflow:hidden}
 .ai-results .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.measure-panel{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+.measure-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.measure-actions{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap}
+.measure-actions button{flex:1;min-width:150px}
+.measure-panel input[type=number]{background:#0d1728;color:var(--txt);border:1px solid var(--line);border-radius:11px;padding:10px 12px;outline:none;width:100%}
+.measure-panel input[type=number]:focus{border-color:var(--accent)}
+#mResults{margin-top:6px}
+#mResults li{font-size:13px;font-weight:600}
 #dangerBanner{position:absolute;left:0;right:0;top:0;padding:10px 14px;z-index:5;display:none;
   background:linear-gradient(90deg,#dc2626,#b91c1c);color:#fff;font-weight:700;font-size:14px;
   text-align:center;letter-spacing:.5px;box-shadow:0 6px 18px rgba(220,38,38,.5);animation:dangerPulse 1s infinite}
@@ -189,17 +197,33 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
           <option value="insect">虫蛀检测</option>
           <option value="elevator">电梯安全检测</option>
           <option value="fire" disabled>火灾检测（开发中）</option>
-          <option value="measure" disabled>2D 物体测量（开发中）</option>
+          <option value="measure">2D 物体测量</option>
           <option value="face" disabled>人脸检测（开发中）</option>
           <option value="facerec" disabled>人脸识别（开发中）</option>
           <option value="track" disabled>物体追踪（开发中）</option>
         </select>
-        <button id="btnDetect" class="primary">识别当前画面</button>
-        <button id="btnAuto" class="ghost">连续识别</button>
-        <button id="btnSaveDetect" class="ghost">💾 保存标注图</button>
+        <button id="btnDetect" class="primary ai-tool">识别当前画面</button>
+        <button id="btnAuto" class="ghost ai-tool">连续识别</button>
+        <button id="btnSaveDetect" class="ghost ai-tool">💾 保存标注图</button>
       </div>
       <div id="aiStatus" class="ai-status">就绪 — 点击“识别当前画面”，结果会框选在画面上</div>
       <ul id="aiResults" class="ai-results"></ul>
+      <div id="measurePanel" class="measure-panel" style="display:none">
+        <div class="measure-grid">
+          <div class="field"><label>校准高度</label><input type="number" id="mHeight" value="80" step="0.1"></div>
+          <div class="field"><label>单位</label><select id="mUnit"><option value="cm" selected>厘米 cm</option><option value="mm">毫米 mm</option></select></div>
+          <div class="field"><label>参考物形状</label><select id="mShape"><option value="circle" selected>圆形</option><option value="rect">矩形/正方形</option></select></div>
+          <div class="field" id="mCircleWrap"><label>直径</label><input type="number" id="mDiameter" value="10" step="0.1"></div>
+          <div class="field" id="mRectWrap" style="display:none"><label>长</label><input type="number" id="mLength" value="10" step="0.1"></div>
+          <div class="field" id="mRectWrap2" style="display:none"><label>宽</label><input type="number" id="mWidth" value="10" step="0.1"></div>
+        </div>
+        <div class="measure-actions">
+          <button id="btnCalibrate" class="primary">① 用当前画面校准</button>
+          <button id="btnMeasure" class="ok">② 开始测量</button>
+        </div>
+        <div id="mStatus" class="ai-status">请把参考物放到校准高度，选好形状和尺寸后点击“校准”</div>
+        <ul id="mResults" class="ai-results"></ul>
+      </div>
     </div>
   </section>
 
@@ -508,11 +532,18 @@ const AI_ELEVATOR_PROMPT = `你是电梯安全监控引擎。请判断电梯轿�
 只输出 JSON 数组，不要解释、不要 Markdown。
 格式：[{"label":"物品中文名称","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
 bbox 为归一化坐标 0-1000（左上 x1,y1，右下 x2,y2）。如果画面中没有电动车/电池等违禁物，输出 []。`;
+const AI_CAL_PROMPT = `你是2D测量校准助手。请识别图中最明显的规则形状（圆形、矩形或正方形），只输出JSON数组（最多1个）。
+格式：[{"label":"圆形|矩形|正方形","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
+bbox 为归一化坐标 0-1000（左上 x1,y1，右下 x2,y2）。若没有规则形状，输出 []。`;
+const AI_MEASURE_PROMPT = `你是2D测量引擎。请识别图中所有规则形状（圆形、矩形、正方形），只输出JSON数组，不要解释。
+格式：[{"label":"圆形|矩形|正方形","confidence":0.0,"bbox":[x1,y1,x2,y2]}]
+bbox 为归一化坐标 0-1000（左上 x1,y1，右下 x2,y2）。若没有，输出 []。`;
 const AI_THRESHOLD = 0.5;
 const AI_TASKS = {
   object:   { name:'物体识别',     unit:'个物体',   prompt: AI_OBJECT_PROMPT,   maxW: 416 },
   insect:   { name:'虫蛀检测',     unit:'只虫子',   prompt: AI_INSECT_PROMPT,   maxW: 640 },
-  elevator: { name:'电梯安全检测', unit:'个违禁物', prompt: AI_ELEVATOR_PROMPT, maxW: 512, danger: true }
+  elevator: { name:'电梯安全检测', unit:'个违禁物', prompt: AI_ELEVATOR_PROMPT, maxW: 512, danger: true },
+  measure:  { name:'2D 物体测量',  unit:'个形状',   prompt: AI_MEASURE_PROMPT,  maxW: 640, measure: true }
 };
 let currentTask = 'object';
 
@@ -607,7 +638,7 @@ function drawBoxes(ctx, objs, W, H){
     ctx.strokeRect(x, y, w, h);
     ctx.font = '600 ' + fs + 'px system-ui,-apple-system,sans-serif';
     ctx.textBaseline = 'top';
-    const label = o.label + ' ' + Math.round(o.confidence * 100) + '%';
+    const label = (o.display != null) ? o.display : (o.label + ' ' + Math.round(o.confidence * 100) + '%');
     const tw = ctx.measureText(label).width + 12, th = fs + 8;
     const by = y - th < 0 ? y : y - th;
     ctx.fillStyle = c; ctx.fillRect(x, by, tw, th);
@@ -752,6 +783,131 @@ $('#btnAuto').onclick = () => {
     autoLoop();
   }
 };
+function updateTaskUI(){
+  const isMeasure = !!((AI_TASKS[currentTask] || {}).measure);
+  document.querySelectorAll('.ai-tool').forEach(el => { el.style.display = isMeasure ? 'none' : ''; });
+  const mp = $('#measurePanel'); if(mp) mp.style.display = isMeasure ? 'block' : 'none';
+}
+function updateMeasureShape(){
+  const c = $('#mShape').value === 'circle';
+  $('#mCircleWrap').style.display = c ? '' : 'none';
+  $('#mRectWrap').style.display = c ? 'none' : '';
+  $('#mRectWrap2').style.display = c ? 'none' : '';
+}
+function setMStatus(msg, isErr, busy){
+  const el = $('#mStatus');
+  el.textContent = msg;
+  el.className = 'ai-status' + (isErr ? ' error' : (busy ? ' busy' : ''));
+}
+function fmtLen(v){ return (Math.round(v * 10) / 10) + ' ' + measure.unit; }
+function bboxArea(o){ return o.bbox ? (o.bbox[2] - o.bbox[0]) * (o.bbox[3] - o.bbox[1]) : 0; }
+function iou(a, b){
+  const x1 = Math.max(a[0], b[0]), y1 = Math.max(a[1], b[1]);
+  const x2 = Math.min(a[2], b[2]), y2 = Math.min(a[3], b[3]);
+  if(x2 <= x1 || y2 <= y1) return 0;
+  const inter = (x2 - x1) * (y2 - y1);
+  const uni = (a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - inter;
+  return uni > 0 ? inter / uni : 0;
+}
+function dedupe(objs){
+  const out = [];
+  objs.forEach(o => {
+    if(!o.bbox || !out.some(p => p.bbox && iou(p.bbox, o.bbox) > 0.55)) out.push(o);
+  });
+  return out;
+}
+let measure = { scale: 0, height: 0, unit: 'cm', shape: 'circle' };
+async function visionRequest(prompt, fr){
+  const payload = {
+    model: aiCfg.model,
+    messages: [{ role:'user', content:[
+      { type:'image_url', image_url:{ url: fr.dataUrl } },
+      { type:'text', text: prompt }
+    ]}],
+    max_tokens: 400,
+    temperature: 0
+  };
+  const controller = new AbortController();
+  const to = setTimeout(() => controller.abort(), 25000);
+  try{
+    const resp = await fetch(aiCfg.url, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + aiCfg.key },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    if(!resp.ok){ const t = await resp.text(); throw new Error('HTTP ' + resp.status + ' ' + t.slice(0,140)); }
+    const j = await resp.json();
+    const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+    return parseDetections(content, fr.w, fr.h);
+  } finally { clearTimeout(to); }
+}
+async function grabFrame(){
+  let src = liveFrame();
+  if(!src){ src = await captureFrame(); if(!streaming){ $('#stream').src = src.src; $('#streamOverlay').style.display = 'none'; } }
+  let fr;
+  try{ fr = frameToDataURL(src); }
+  catch(err){ src = await captureFrame(); fr = frameToDataURL(src); }
+  return fr;
+}
+async function calibrate(){
+  if(!aiCfg.key){ setMStatus('未配置 API 密钥（ai_config.h）', true); return; }
+  const h = parseFloat($('#mHeight').value);
+  const unit = $('#mUnit').value;
+  const shape = $('#mShape').value;
+  const refD = parseFloat($('#mDiameter').value);
+  const refL = parseFloat($('#mLength').value);
+  const refW = parseFloat($('#mWidth').value);
+  if(!(h > 0)){ setMStatus('请输入校准高度', true); return; }
+  if(shape === 'circle' && !(refD > 0)){ setMStatus('请输入圆的直径', true); return; }
+  if(shape === 'rect' && !(refL > 0 && refW > 0)){ setMStatus('请输入矩形的长和宽', true); return; }
+  setMStatus('校准中…', false, true);
+  try{
+    const fr = await grabFrame();
+    const objs = (await visionRequest(AI_CAL_PROMPT, fr)).sort((a,b) => bboxArea(b) - bboxArea(a));
+    if(!objs.length){ setMStatus('未检测到参考形状，请把参考物放到画面中央', true); return; }
+    const o = objs[0];
+    const pw = (o.bbox[2] - o.bbox[0]) * fr.w, ph = (o.bbox[3] - o.bbox[1]) * fr.h;
+    if(pw < 8 || ph < 8){ setMStatus('参考物太小，请靠近一些', true); return; }
+    const scale = (shape === 'circle') ? (refD / ((pw + ph) / 2)) : (((refL / pw) + (refW / ph)) / 2);
+    measure = { scale: scale, height: h, unit: unit, shape: shape };
+    lastObjs = [{ label:'参考物', confidence:o.confidence, bbox:o.bbox, display:'校准 ' + fmtLen(shape === 'circle' ? refD : refL) }];
+    drawOverlay(lastObjs);
+    setMStatus('✓ 校准完成：1 像素 = ' + scale.toFixed(4) + ' ' + unit + '（参考物 ' + Math.round(pw) + '×' + Math.round(ph) + ' px，高度 ' + h + ' ' + unit + '），现在可在同一高度测量');
+  }catch(e){ setMStatus('校准失败：' + e.message, true); }
+}
+async function measureNow(){
+  if(!aiCfg.key){ setMStatus('未配置 API 密钥（ai_config.h）', true); return; }
+  if(!measure.scale){ setMStatus('请先完成校准', true); return; }
+  setMStatus('测量中…', false, true);
+  try{
+    const fr = await grabFrame();
+    const objs = dedupe(await visionRequest(AI_MEASURE_PROMPT, fr));
+    if(!objs.length){ lastObjs = []; drawOverlay([]); $('#mResults').innerHTML = '<li>未检测到规则形状</li>'; setMStatus('未检测到规则形状'); return; }
+    const res = objs.map(o => {
+      const pw = (o.bbox[2] - o.bbox[0]) * fr.w, ph = (o.bbox[3] - o.bbox[1]) * fr.h;
+      const rw = pw * measure.scale, rh = ph * measure.scale;
+      let type = /圆/.test(o.label) ? '圆形' : '矩形';
+      let dims;
+      if(type === '圆形'){ dims = '直径 ' + fmtLen((rw + rh) / 2); }
+      else {
+        const isSq = Math.abs(pw - ph) / Math.max(pw, ph) < 0.1;
+        type = isSq ? '正方形' : '矩形';
+        dims = '长 ' + fmtLen(Math.max(rw, rh)) + ' × 宽 ' + fmtLen(Math.min(rw, rh));
+      }
+      return { label:type, confidence:o.confidence, bbox:o.bbox, display:type + ' ' + dims };
+    });
+    lastObjs = res;
+    drawOverlay(res);
+    const ul = $('#mResults'); ul.innerHTML = '';
+    res.forEach(o => { const li = document.createElement('li'); li.textContent = o.display; ul.appendChild(li); });
+    setMStatus('测量完成：' + res.length + ' 个形状（校准高度 ' + measure.height + ' ' + measure.unit + '）');
+  }catch(e){ setMStatus('测量失败：' + e.message, true); }
+}
+$('#mShape').onchange = updateMeasureShape;
+$('#btnCalibrate').onclick = calibrate;
+$('#btnMeasure').onclick = measureNow;
+updateMeasureShape();
 $('#aiTask').onchange = e => {
   if(!AI_TASKS[e.target.value]){ e.target.value = currentTask; return; }
   currentTask = e.target.value;
@@ -759,13 +915,15 @@ $('#aiTask').onchange = e => {
   $('#overlay').style.display = 'none';
   $('#aiResults').innerHTML = '';
   $('#dangerBanner').style.display = 'none';
-  setAiStatus('已切换到「' + AI_TASKS[currentTask].name + '」，点击“识别当前画面”开始');
+  updateTaskUI();
+  setAiStatus('已切换到「' + AI_TASKS[currentTask].name + '」' + (AI_TASKS[currentTask].measure ? '，请先校准' : '，点击“识别当前画面”开始'));
 };
 
 /* ---------------- 初始化 ---------------- */
 loadStatus();
 loadFiles();
 loadAiConfig();
+updateTaskUI();
 window.addEventListener('resize', () => { if(lastObjs.length) drawOverlay(lastObjs); });
 $('#stream').addEventListener('load', () => { if(lastObjs.length) drawOverlay(lastObjs); });
 setInterval(loadFiles, 15000);
